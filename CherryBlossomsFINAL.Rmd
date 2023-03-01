@@ -1,0 +1,276 @@
+---
+title: "Cherry Blossom Competition"
+author: "Andrey"
+date: "01/01/2023"
+output:
+  html_document:
+    df_print: kable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, error = FALSE, 
+                      message = FALSE,
+                      fig.align = 'center',
+                      out.width = '80%')
+```
+
+```{r, eval=FALSE}
+# Install Package
+install.packages('tidyverse')
+```
+
+```{r}
+# Load Package
+library(tidyverse)
+```
+
+
+The six columns in each data file are
+
+* _location_ a human-readable location identifier (`string`).
+* _lat_ (approximate) latitude of the cherry trees (`double`).
+* _long_ (approximate) longitude of the cherry trees (`double`).
+* _alt_ (approximate) altitude of the cherry trees (`double`).
+* _year_ year of the observation (`integer`).
+* *bloom_date* date of peak bloom of the cherry trees (ISO 8601 date `string`). The "peak bloom date" may be defined differently for different sites
+* *bloom_doy* days since January 1st of the year until peak bloom (`integer`). January 1st corresponds to `1`.
+
+```{r}
+cherry <- read.csv("data/washingtondc.csv") %>% 
+  bind_rows(read.csv("data/liestal.csv")) %>% 
+  bind_rows(read.csv("data/kyoto.csv")) %>% 
+  bind_rows(read.csv("data/japan.csv")) %>%
+  bind_rows(read.csv("data/meteoswiss.csv")) %>%
+  bind_rows(read.csv("data/south_korea.csv")) %>%
+  bind_rows(read.csv("data/vancouver.csv"))
+```
+
+# Visualizing Data
+```{r, fig.width=8, fig.height=3, out.width='100%', fig.cap="Time series of peak bloom of cherry trees since 1880 at three different sites."}
+cherry %>% 
+  filter(year >= 1990) %>%
+  ggplot(aes(x = year, y = bloom_doy)) +
+  geom_point() +
+  geom_step(linetype = 'dotted', color = 'gray50') +
+  scale_x_continuous(breaks = seq(1990, 2020, by = 20)) +
+  facet_grid(cols = vars(str_to_title(location))) +
+  labs(x = "Year", y = "Peak bloom (days since Jan 1st)")
+```
+
+```{r}
+cherry2 <- cherry %>% select(-c("alt","bloom_date","location"))
+cherry2 <- cherry2 %>% filter(year >= 1990)
+cherry2
+```
+
+```{r}
+# RNOAA Package
+install.packages("rnoaa")
+library(rnoaa)
+```
+```{r}
+cherry3 <- cherry2
+cherry3
+```
+
+
+```{r}
+stations = unique(cherry3[1:2])
+colnames(stations) = c("latitude","longitude")
+stations['id'] = 1:nrow(stations)
+stations
+```
+
+```{r}
+station_data <- ghcnd_stations()
+```
+
+```{r}
+nearby_stations <-  meteo_nearby_stations(lat_lon_df = stations,
+                    station_data = station_data, year_min=1990,year_max=2023,var=c("TMAX","TMIN"),limit=1)
+```
+
+```{r}
+nearby_stations = Reduce(function(x, y) merge(x, y, all=TRUE), nearby_stations)
+nearby_stations
+```
+
+
+
+```{r}
+stations['nearby'] = nearby_stations[,1]
+stations = stations %>% select(-c("id"))
+stations
+```
+
+```{r}
+# US Washington (Fix)
+stations[1,"nearby"]= "USC00186350"
+stations
+```
+
+
+```{r}
+cherry4 <- left_join(x=cherry2,y=stations, by=join_by(lat==latitude,long==longitude))
+```
+
+```{r}
+cherry4
+```
+
+
+```{r}
+cherrytemp <- unique(cherry4$nearby)
+cherrytemp
+```
+
+
+```{r, warning=FALSE}
+temp4 = data.frame()
+for(i in 1:length(cherrytemp)){
+temp <- ghcnd_search(stationid = cherrytemp[i], var = c("tmax"), 
+               date_min = "1980-01-01", date_max = "2023-02-27")[[1]] %>% mutate(year = as.integer(format(date, "%Y")),
+         month = as.integer(strftime(date, '%m')) %% 12, # make December "0"
+         season = cut(month, breaks = c(0, 2, 5, 8, 11),
+                      include.lowest = TRUE,
+                      labels = c("Winter", "Spring", "Summer", "Fall")),
+         year = if_else(month == 0, year + 1L, year)) %>%
+  group_by(year, season) %>%
+  summarize(tmax_avg = mean(tmax, na.rm = TRUE))
+temp2 <- ghcnd_search(stationid = cherrytemp[i], var = c("tmin"), 
+              date_min = "1980-01-01", date_max = "2023-02-27")[[1]] %>% mutate(year = as.integer(format(date, "%Y")),
+         month = as.integer(strftime(date, '%m')) %% 12, # make December "0"
+         season = cut(month, breaks = c(0, 2, 5, 8, 11),
+                      include.lowest = TRUE,
+                      labels = c("Winter", "Spring", "Summer", "Fall")),
+         year = if_else(month == 0, year + 1L, year)) %>%
+  group_by(year, season) %>%
+  summarize(tmin_avg = mean(tmin, na.rm = TRUE))
+
+temp3 = merge(temp,temp2,by=c("year","season"))
+temp3['stationid'] = cherrytemp[i]
+temp4 = rbind(temp4,temp3)
+}
+```
+```{r}
+temp5 = temp4
+temp5 = temp5[temp5$season == "Winter",]
+temp5
+temp5$lag10_tmax <- lag(temp5$tmax_avg, 10)
+temp5$lag10_tmin <- lag(temp5$tmin_avg, 10)
+temp5 = temp5 %>% select(-c("tmax_avg","tmin_avg","season"))
+temp5 = temp5 %>% drop_na()
+temp5
+```
+
+```{r}
+cherry5 <- left_join(x=cherry4,y=temp5, by=join_by(nearby==stationid,year==year))
+#cherry5 = cherry5 %>% mutate(dummy=1) %>% spread(key=season,value=dummy, fill=0)
+cherry5 = cherry5 %>% drop_na()
+cherry5 = cherry5 %>% select(-c("nearby"))
+cherry5
+```
+
+
+```{r}
+library(forecast)
+myarima <- auto.arima(cherry5$bloom_doy,xreg=data.matrix(cherry5[,-4]))
+myarima
+```
+```{r}
+cherry5[,-4][cherry5$lat == 35.0119831 & cherry5$year==2022,]
+```
+```{r}
+cherry_pred <- left_join(x=cherry4,y=temp4[temp4$season == "Winter",] %>% select(-c("season")), by=join_by(nearby==stationid,year==year))
+cherry_pred = cherry_pred %>% filter(year > 2012)
+cherry_pred
+```
+
+
+```{r}
+#Kyoto
+kyoto_x = cherry_pred[cherry_pred$lat == "35.0119831",]
+kyoto_x = kyoto_x %>% select(-c("bloom_doy","nearby"))
+kyoto_x$year = kyoto_x$year + 10
+colnames(kyoto_x)[colnames(kyoto_x) == "tmax_avg"] ="lag10_tmax"
+colnames(kyoto_x)[colnames(kyoto_x) == "tmin_avg"] ="lag10_tmin"
+kyoto_x = data.matrix(kyoto_x,rownames.force=FALSE)
+kyoto_x
+
+#Liestal
+liestal_x = cherry_pred[cherry_pred$lat == "47.4814",]
+liestal_x = liestal_x %>% select(-c("bloom_doy","nearby"))
+liestal_x$year = liestal_x$year + 10
+colnames(liestal_x)[colnames(liestal_x) == "tmax_avg"] ="lag10_tmax"
+colnames(liestal_x)[colnames(liestal_x) == "tmin_avg"] ="lag10_tmin"
+liestal_x = data.matrix(liestal_x,rownames.force=FALSE)
+liestal_x
+
+# Washington
+washingtondc_x = cherry_pred[cherry_pred$lat == "38.8853496",]
+washingtondc_x = washingtondc_x %>% select(-c("bloom_doy","nearby"))
+washingtondc_x$year = washingtondc_x$year + 10
+colnames(washingtondc_x)[colnames(washingtondc_x) == "tmax_avg"] ="lag10_tmax"
+colnames(washingtondc_x)[colnames(washingtondc_x) == "tmin_avg"] ="lag10_tmin"
+washingtondc_x = data.matrix(washingtondc_x,rownames.force=FALSE)
+washingtondc_x
+```
+
+```{r}
+dim(washingtondc_x)
+```
+
+```{r}
+#Vancouver
+vancouver_x = cherry_pred[cherry_pred$lat == "49.2237",]
+vancouver_x = vancouver_x %>% select(-c("bloom_doy","nearby"))
+washingtondc_x$year = vancouver_x$year + 10
+colnames(vancouver_x)[colnames(vancouver_x) == "tmax_avg"] ="lag10_tmax"
+colnames(vancouver_x)[colnames(vancouver_x) == "tmin_avg"] ="lag10_tmin"
+vancouver_x = rbind(vancouver_x,vancouver_x,vancouver_x,vancouver_x,vancouver_x,vancouver_x,vancouver_x,vancouver_x,vancouver_x,vancouver_x)
+vancouver_x$year = 2023:2032
+vancouver_x = data.matrix(vancouver_x,rownames.force=FALSE)
+vancouver_x
+```
+
+
+```{r}
+# Predict Kyoto
+kyoto = predict(myarima,newxreg=kyoto_x)
+kyotopred = round(kyoto$pred)
+kyotopred
+
+# Predict Liestal
+liestal = predict(myarima,newxreg=liestal_x)
+liestalpred = round(liestal$pred)
+liestalpred
+
+# Predict Washington DC
+washington = predict(myarima,newxreg=washingtondc_x)
+washingtonpred = round(washington$pred)
+washingtonpred
+
+# Predict Vancouver
+vancouver = predict(myarima,newxreg=vancouver_x)
+vancouverpred = round(vancouver$pred)
+vancouverpred
+```
+
+```{r}
+predictions <- data.frame(2023:2032,kyotopred,liestalpred,washingtonpred,vancouverpred)
+predictions
+```
+
+
+```{r}
+# Submission Predictions
+submission_predictions = predictions
+colnames(submission_predictions) = c("year","kyoto","liestal","washingtondc","vancouver")
+submission_predictions
+```
+
+```{r, eval=FALSE}
+write.csv(submission_predictions, file = "cherry-predictions.csv",
+          row.names = FALSE)
+```
+
