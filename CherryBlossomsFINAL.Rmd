@@ -45,10 +45,15 @@ cherry <- read.csv("data/washingtondc.csv") %>%
   bind_rows(read.csv("data/vancouver.csv"))
 ```
 
+```{r}
+cherry
+```
+
+
 # Visualizing Data
 ```{r, fig.width=8, fig.height=3, out.width='100%', fig.cap="Time series of peak bloom of cherry trees since 1880 at three different sites."}
 cherry %>% 
-  filter(year >= 1990) %>%
+  filter(year >= 1990,location == "washingtondc") %>%
   ggplot(aes(x = year, y = bloom_doy)) +
   geom_point() +
   geom_step(linetype = 'dotted', color = 'gray50') +
